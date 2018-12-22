@@ -37,6 +37,7 @@ _DEFAULT_IMAGE_BYTES = _HEIGHT * _WIDTH * _NUM_CHANNELS
 _RECORD_BYTES = _DEFAULT_IMAGE_BYTES + 1
 _NUM_CLASSES = 10
 _NUM_DATA_FILES = 5
+_BATCHAUG_M = 4
 
 _NUM_IMAGES = {
     'train': 50000,
@@ -84,27 +85,44 @@ def parse_record(raw_record, is_training):
   # float32.
   image = tf.cast(tf.transpose(depth_major, [1, 2, 0]), tf.float32)
 
-  image = preprocess_image(image, is_training)
+  if is_training and _BATCHAUG_M > 1:
+    dup_image = tf.tile(tf.expand_dims(image, 0), [_BATCHAUG_M, 1, 1, 1])
+    dup_label = tf.tile(tf.expand_dims(label, 0), [_BATCHAUG_M])
 
-  return image, label
+    return dup_image, dup_label
+  else:
+    return image, label
 
 
-def preprocess_image(image, is_training):
+def preprocess_image(data, is_training):
   """Preprocess a single image of layout [height, width, depth]."""
+
+  images, labels = data
+
+  # Reshape to concatenate duplicated batches
   if is_training:
-    # Resize the image to add four extra pixels on each side.
-    image = tf.image.resize_image_with_crop_or_pad(
+    images = tf.reshape(images, [images.shape[0] * images.shape[1], images.shape[2], images.shape[3], images.shape[4]])
+    labels = tf.reshape(labels, [labels.shape[0] * labels.shape[1]])
+    
+  def per_image_preprocess(image):
+    if is_training:
+      # Resize the image to add four extra pixels on each side.
+      image = tf.image.resize_image_with_crop_or_pad(
         image, _HEIGHT + 8, _WIDTH + 8)
 
-    # Randomly crop a [_HEIGHT, _WIDTH] section of the image.
-    image = tf.random_crop(image, [_HEIGHT, _WIDTH, _NUM_CHANNELS])
+      # Randomly crop a [_HEIGHT, _WIDTH] section of the image.
+      image = tf.random_crop(image, [_HEIGHT, _WIDTH, _NUM_CHANNELS])
 
-    # Randomly flip the image horizontally.
-    image = tf.image.random_flip_left_right(image)
+      # Randomly flip the image horizontally.
+      image = tf.image.random_flip_left_right(image)
 
-  # Subtract off the mean and divide by the variance of the pixels.
-  image = tf.image.per_image_standardization(image)
-  return image
+    # Subtract off the mean and divide by the variance of the pixels.
+    image = tf.image.per_image_standardization(image)
+    return image
+
+  # Apply on the entire batch
+  images = tf.map_fn(per_image_preprocess, images)
+  return images, labels
 
 
 def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None):
@@ -129,6 +147,7 @@ def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None):
       batch_size=batch_size,
       shuffle_buffer=_NUM_IMAGES['train'],
       parse_record_fn=parse_record,
+      preprocess_fn=preprocess_image,
       num_epochs=num_epochs,
       num_gpus=num_gpus,
       examples_per_epoch=_NUM_IMAGES['train'] if is_training else None

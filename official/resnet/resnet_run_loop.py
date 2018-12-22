@@ -44,7 +44,7 @@ from official.utils.misc import model_helpers
 # Functions for input processing.
 ################################################################################
 def process_record_dataset(dataset, is_training, batch_size, shuffle_buffer,
-                           parse_record_fn, num_epochs=1, num_gpus=None,
+                           parse_record_fn, preprocess_fn=None, num_epochs=1, num_gpus=None,
                            examples_per_epoch=None):
   """Given a Dataset with raw records, return an iterator over the records.
 
@@ -91,11 +91,16 @@ def process_record_dataset(dataset, is_training, batch_size, shuffle_buffer,
   # num_parallel_batches > 1 produces no improvement in throughput, since
   # batch_size is almost always much greater than the number of CPU cores.
   dataset = dataset.apply(
-      tf.contrib.data.map_and_batch(
+    tf.data.experimental.map_and_batch(
+      #tf.contrib.data.map_and_batch(
           lambda value: parse_record_fn(value, is_training),
           batch_size=batch_size,
           num_parallel_batches=1,
-          drop_remainder=False))
+          drop_remainder=True))
+
+  # Preprocess after batching
+  if preprocess_fn is not None:
+    dataset = dataset.map(lambda *args: preprocess_fn(args, is_training))
 
   # Operations between the final prefetch and the get_next call to the iterator
   # will happen synchronously during run time. We prefetch here again to
