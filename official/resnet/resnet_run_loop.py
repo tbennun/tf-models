@@ -300,6 +300,10 @@ def resnet_model_fn(features, labels, mode, model_class,
         momentum=momentum
     )
 
+    if flags.FLAGS.horovod:
+      tf.logging.info('Enabling Horovod distributed optimizer')
+      optimizer = hvd.DistributedOptimizer(optimizer)
+
     def _dense_grad_filter(gvs):
       """Only apply gradient updates to the final layer.
 
@@ -379,6 +383,14 @@ def resnet_main(
 
   model_helpers.apply_clean(flags.FLAGS)
 
+  exporter = True
+  if flags_obj.horovod:
+    from horovod import tensorflow as hvd
+    hvd.init()
+    if hvd.rank() != 0:
+      exporter = False
+    print('Horovod initialized, rank %d / %d' % (hvd.rank(), hvd.size()))
+
   # Using the Winograd non-fused algorithms provides a small performance boost.
   os.environ['TF_ENABLE_WINOGRAD_NONFUSED'] = '1'
 
@@ -390,6 +402,10 @@ def resnet_main(
       inter_op_parallelism_threads=flags_obj.inter_op_parallelism_threads,
       intra_op_parallelism_threads=flags_obj.intra_op_parallelism_threads,
       allow_soft_placement=True)
+
+  if flags_obj.horovod:
+    session_config.gpu_options.allow_growth = True
+    session_config.gpu_options.visible_device_list = str(hvd.local_rank())
 
   distribution_strategy = distribution_utils.get_distribution_strategy(
       flags_core.get_num_gpus(flags_obj), flags_obj.all_reduce_alg)
@@ -436,6 +452,9 @@ def resnet_main(
       flags_obj.hooks,
       model_dir=flags_obj.model_dir,
       batch_size=flags_obj.batch_size)
+
+  if flags_obj.horovod:
+    train_hooks.append(hvd.BroadcastGlobalVariablesHook(0))
 
   def input_fn_train(num_epochs):
     return input_function(
@@ -493,7 +512,7 @@ def resnet_main(
         flags_obj.stop_threshold, eval_results['accuracy']):
       break
 
-  if flags_obj.export_dir is not None:
+  if flags_obj.export_dir is not None and exporter:
     # Exports a saved model for the given classifier.
     input_receiver_fn = export.build_tensor_serving_input_receiver_fn(
         shape, batch_size=flags_obj.batch_size)
@@ -510,6 +529,8 @@ def define_resnet_flags(resnet_size_choices=None):
 
   flags.DEFINE_integer(name='batchaug', short_name='aug', default=1,
                        help='Number of duplicates per image for batch augmentation')
+  flags.DEFINE_bool(name='horovod', short_name='hvd', default=False,
+                    help='Use Horovod for distributed training')
 
   flags.DEFINE_enum(
       name='resnet_version', short_name='rv', default='2',
