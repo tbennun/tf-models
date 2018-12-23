@@ -37,7 +37,6 @@ _DEFAULT_IMAGE_BYTES = _HEIGHT * _WIDTH * _NUM_CHANNELS
 _RECORD_BYTES = _DEFAULT_IMAGE_BYTES + 1
 _NUM_CLASSES = 10
 _NUM_DATA_FILES = 5
-_BATCHAUG_M = 4
 
 _NUM_IMAGES = {
     'train': 50000,
@@ -67,7 +66,7 @@ def get_filenames(is_training, data_dir):
     return [os.path.join(data_dir, 'test_batch.bin')]
 
 
-def parse_record(raw_record, is_training):
+def parse_record(raw_record, is_training, batchaug_m):
   """Parse CIFAR-10 image and label from a raw record."""
   # Convert bytes to a vector of uint8 that is record_bytes long.
   record_vector = tf.decode_raw(raw_record, tf.uint8)
@@ -85,9 +84,9 @@ def parse_record(raw_record, is_training):
   # float32.
   image = tf.cast(tf.transpose(depth_major, [1, 2, 0]), tf.float32)
 
-  if is_training and _BATCHAUG_M > 1:
-    dup_image = tf.tile(tf.expand_dims(image, 0), [_BATCHAUG_M, 1, 1, 1])
-    dup_label = tf.tile(tf.expand_dims(label, 0), [_BATCHAUG_M])
+  if is_training and batchaug_m > 1:
+    dup_image = tf.tile(tf.expand_dims(image, 0), [batchaug_m, 1, 1, 1])
+    dup_label = tf.tile(tf.expand_dims(label, 0), [batchaug_m])
 
     return dup_image, dup_label
   else:
@@ -100,7 +99,7 @@ def preprocess_image(data, is_training):
   images, labels = data
 
   # Reshape to concatenate duplicated batches
-  if is_training:
+  if is_training and len(images.shape) > 4:
     images = tf.reshape(images, [images.shape[0] * images.shape[1], images.shape[2], images.shape[3], images.shape[4]])
     labels = tf.reshape(labels, [labels.shape[0] * labels.shape[1]])
     
@@ -125,7 +124,7 @@ def preprocess_image(data, is_training):
   return images, labels
 
 
-def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None):
+def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None, batchaug_m=1):
   """Input_fn using the tf.data input pipeline for CIFAR-10 dataset.
 
   Args:
@@ -150,7 +149,8 @@ def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None):
       preprocess_fn=preprocess_image,
       num_epochs=num_epochs,
       num_gpus=num_gpus,
-      examples_per_epoch=_NUM_IMAGES['train'] if is_training else None
+      examples_per_epoch=_NUM_IMAGES['train'] if is_training else None,
+      batchaug_m=batchaug_m
   )
 
 

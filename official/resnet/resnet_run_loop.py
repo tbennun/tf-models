@@ -45,7 +45,7 @@ from official.utils.misc import model_helpers
 ################################################################################
 def process_record_dataset(dataset, is_training, batch_size, shuffle_buffer,
                            parse_record_fn, preprocess_fn=None, num_epochs=1, num_gpus=None,
-                           examples_per_epoch=None):
+                           examples_per_epoch=None, batchaug_m=1):
   """Given a Dataset with raw records, return an iterator over the records.
 
   Args:
@@ -93,7 +93,7 @@ def process_record_dataset(dataset, is_training, batch_size, shuffle_buffer,
   dataset = dataset.apply(
     tf.data.experimental.map_and_batch(
       #tf.contrib.data.map_and_batch(
-          lambda value: parse_record_fn(value, is_training),
+          lambda value: parse_record_fn(value, is_training, batchaug_m),
           batch_size=batch_size,
           num_parallel_batches=1,
           drop_remainder=True))
@@ -232,6 +232,8 @@ def resnet_model_fn(features, labels, mode, model_class,
     EstimatorSpec parameterized according to the input params and the
     current mode.
   """
+
+  print('Final tensor:', features)
 
   # Generate a summary node for the images
   tf.summary.image('images', features, max_outputs=6)
@@ -441,14 +443,15 @@ def resnet_main(
         batch_size=distribution_utils.per_device_batch_size(
             flags_obj.batch_size, flags_core.get_num_gpus(flags_obj)),
         num_epochs=num_epochs,
-        num_gpus=flags_core.get_num_gpus(flags_obj))
+        num_gpus=flags_core.get_num_gpus(flags_obj),
+        batchaug_m=flags_obj.batchaug)
 
   def input_fn_eval():
     return input_function(
         is_training=False, data_dir=flags_obj.data_dir,
         batch_size=distribution_utils.per_device_batch_size(
             flags_obj.batch_size, flags_core.get_num_gpus(flags_obj)),
-        num_epochs=1)
+        num_epochs=1, batchaug_m=1)
 
   if flags_obj.eval_only or not flags_obj.train_epochs:
     # If --eval_only is set, perform a single loop with zero train epochs.
@@ -504,6 +507,9 @@ def define_resnet_flags(resnet_size_choices=None):
   flags_core.define_image()
   flags_core.define_benchmark()
   flags.adopt_module_key_flags(flags_core)
+
+  flags.DEFINE_integer(name='batchaug', short_name='aug', default=1,
+                       help='Number of duplicates per image for batch augmentation')
 
   flags.DEFINE_enum(
       name='resnet_version', short_name='rv', default='2',

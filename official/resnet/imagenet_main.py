@@ -129,7 +129,7 @@ def _parse_example_proto(example_serialized):
   return features['image/encoded'], label, bbox
 
 
-def parse_record(raw_record, is_training):
+def parse_record(raw_record, is_training, batchaug_m):
   """Parses a record containing a training example of an image.
 
   The input record is parsed into a label and image, and the image is passed
@@ -145,7 +145,28 @@ def parse_record(raw_record, is_training):
   """
   image_buffer, label, bbox = _parse_example_proto(raw_record)
 
-  image = imagenet_preprocessing.preprocess_image(
+  if is_training and batchaug_m > 1:
+    dup_image = tf.tile(tf.expand_dims(image_buffer, 0), [batchaug_m])
+    dup_label = tf.tile(tf.expand_dims(label, 0), [batchaug_m])
+    dup_bbox =  tf.tile(tf.expand_dims(bbox, 0), [batchaug_m,1,1,1])
+
+    return dup_image, dup_label, dup_bbox
+
+
+  return image_buffer, label, bbox
+
+def imagenet_preprocess_image(data, is_training):
+  image_buffers, labels, bboxes = data
+
+  # Reshape to concatenate duplicated batches
+  if is_training and len(image_buffers.shape) > 1:
+    image_buffers = tf.reshape(image_buffers, [image_buffers.shape[0] * image_buffers.shape[1]])
+    labels = tf.reshape(labels, [labels.shape[0] * labels.shape[1]])
+    bboxes = tf.reshape(bboxes, [bboxes.shape[0] * bboxes.shape[1], bboxes.shape[2], tf.shape(bboxes)[3], bboxes.shape[4]])
+
+  def per_image_preprocess(elem):
+    image_buffer, bbox = elem
+    return imagenet_preprocessing.preprocess_image(
       image_buffer=image_buffer,
       bbox=bbox,
       output_height=_DEFAULT_IMAGE_SIZE,
@@ -153,10 +174,13 @@ def parse_record(raw_record, is_training):
       num_channels=_NUM_CHANNELS,
       is_training=is_training)
 
-  return image, label
+  images = tf.map_fn(per_image_preprocess, (image_buffers, bboxes), dtype=tf.float32)
+  return images, labels
 
 
-def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None):
+
+
+def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None, batchaug_m=1):
   """Input function which provides batches for train or eval.
 
   Args:
@@ -190,9 +214,11 @@ def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None):
       batch_size=batch_size,
       shuffle_buffer=_SHUFFLE_BUFFER,
       parse_record_fn=parse_record,
+      preprocess_fn=imagenet_preprocess_image,
       num_epochs=num_epochs,
       num_gpus=num_gpus,
-      examples_per_epoch=_NUM_IMAGES['train'] if is_training else None
+      examples_per_epoch=_NUM_IMAGES['train'] if is_training else None,
+      batchaug_m=batchaug_m
   )
 
 
