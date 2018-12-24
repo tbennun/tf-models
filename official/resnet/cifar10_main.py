@@ -124,7 +124,7 @@ def preprocess_image(data, is_training):
   return images, labels
 
 
-def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None, batchaug_m=1):
+def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None, batchaug_m=1, num_workers=1):
   """Input_fn using the tf.data input pipeline for CIFAR-10 dataset.
 
   Args:
@@ -150,7 +150,8 @@ def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None, bat
       num_epochs=num_epochs,
       num_gpus=num_gpus,
       examples_per_epoch=_NUM_IMAGES['train'] if is_training else None,
-      batchaug_m=batchaug_m
+      batchaug_m=batchaug_m,
+      num_workers=num_workers
   )
 
 

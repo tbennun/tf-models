@@ -40,6 +40,7 @@ _NUM_IMAGES = {
 }
 
 _NUM_TRAIN_FILES = 1024
+_NUM_VAL_FILES = 128
 _SHUFFLE_BUFFER = 10000
 
 DATASET_NAME = 'ImageNet'
@@ -51,12 +52,12 @@ def get_filenames(is_training, data_dir):
   """Return filenames for dataset."""
   if is_training:
     return [
-        os.path.join(data_dir, 'train-%05d-of-01024' % i)
+        os.path.join(data_dir, 'train-%05d-of-%05d' % (i, _NUM_TRAIN_FILES))
         for i in range(_NUM_TRAIN_FILES)]
   else:
     return [
-        os.path.join(data_dir, 'validation-%05d-of-00128' % i)
-        for i in range(128)]
+        os.path.join(data_dir, 'validation-%05d-of-%05d' % (i, _NUM_VAL_FILES))
+        for i in range(_NUM_VAL_FILES)]
 
 
 def _parse_example_proto(example_serialized):
@@ -180,7 +181,7 @@ def imagenet_preprocess_image(data, is_training):
 
 
 
-def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None, batchaug_m=1):
+def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None, batchaug_m=1, num_workers=1):
   """Input function which provides batches for train or eval.
 
   Args:
@@ -218,7 +219,8 @@ def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None, bat
       num_epochs=num_epochs,
       num_gpus=num_gpus,
       examples_per_epoch=_NUM_IMAGES['train'] if is_training else None,
-      batchaug_m=batchaug_m
+      batchaug_m=batchaug_m,
+      num_workers=num_workers
   )
 
 

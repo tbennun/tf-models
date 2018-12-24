@@ -45,7 +45,7 @@ from official.utils.misc import model_helpers
 ################################################################################
 def process_record_dataset(dataset, is_training, batch_size, shuffle_buffer,
                            parse_record_fn, preprocess_fn=None, num_epochs=1, num_gpus=None,
-                           examples_per_epoch=None, batchaug_m=1):
+                           examples_per_epoch=None, batchaug_m=1, num_workers=1):
   """Given a Dataset with raw records, return an iterator over the records.
 
   Args:
@@ -77,6 +77,10 @@ def process_record_dataset(dataset, is_training, batch_size, shuffle_buffer,
   # dataset for the appropriate number of epochs.
   dataset = dataset.repeat(num_epochs)
 
+  # Adapt epoch length to the number of workers
+  if is_training and num_workers > 1:
+    dataset = dataset.take(((examples_per_epoch * num_epochs) // batch_size // num_workers) * batch_size)
+
   if is_training and num_gpus and examples_per_epoch:
     total_examples = num_epochs * examples_per_epoch
     # Force the number of batches to be divisible by the number of devices.
@@ -91,10 +95,10 @@ def process_record_dataset(dataset, is_training, batch_size, shuffle_buffer,
   # num_parallel_batches > 1 produces no improvement in throughput, since
   # batch_size is almost always much greater than the number of CPU cores.
   dataset = dataset.apply(
-    tf.data.experimental.map_and_batch(
-      #tf.contrib.data.map_and_batch(
+    #tf.data.experimental.map_and_batch(
+    tf.contrib.data.map_and_batch(
           lambda value: parse_record_fn(value, is_training, batchaug_m),
-          batch_size=batch_size,
+          batch_size=batch_size // num_workers,
           num_parallel_batches=1,
           drop_remainder=True))
 
@@ -167,6 +171,7 @@ def learning_rate_with_decay(
     for training the next batch.
   """
   initial_learning_rate = base_lr * batch_size / batch_denom
+
   batches_per_epoch = num_images / batch_size
 
   # Reduce the learning rate at certain epochs.
@@ -233,7 +238,7 @@ def resnet_model_fn(features, labels, mode, model_class,
     current mode.
   """
 
-  print('Final tensor:', features)
+  tf.logging.info('Final tensor: %s' % str(features))
 
   # Generate a summary node for the images
   tf.summary.image('images', features, max_outputs=6)
@@ -302,6 +307,7 @@ def resnet_model_fn(features, labels, mode, model_class,
 
     if flags.FLAGS.horovod:
       tf.logging.info('Enabling Horovod distributed optimizer')
+      from horovod import tensorflow as hvd
       optimizer = hvd.DistributedOptimizer(optimizer)
 
     def _dense_grad_filter(gvs):
@@ -384,12 +390,14 @@ def resnet_main(
   model_helpers.apply_clean(flags.FLAGS)
 
   exporter = True
-  if flags_obj.horovod:
+  num_workers = 1
+  if flags.FLAGS.horovod:
     from horovod import tensorflow as hvd
     hvd.init()
     if hvd.rank() != 0:
       exporter = False
-    print('Horovod initialized, rank %d / %d' % (hvd.rank(), hvd.size()))
+    num_workers = hvd.size()
+    tf.logging.info('Horovod initialized, rank %d / %d' % (hvd.rank(), hvd.size()))
 
   # Using the Winograd non-fused algorithms provides a small performance boost.
   os.environ['TF_ENABLE_WINOGRAD_NONFUSED'] = '1'
@@ -404,7 +412,7 @@ def resnet_main(
       allow_soft_placement=True)
 
   if flags_obj.horovod:
-    session_config.gpu_options.allow_growth = True
+    #session_config.gpu_options.allow_growth = True
     session_config.gpu_options.visible_device_list = str(hvd.local_rank())
 
   distribution_strategy = distribution_utils.get_distribution_strategy(
@@ -422,11 +430,13 @@ def resnet_main(
     warm_start_settings = None
 
   classifier = tf.estimator.Estimator(
-      model_fn=model_function, model_dir=flags_obj.model_dir, config=run_config,
+      model_fn=model_function, 
+      model_dir=flags_obj.model_dir if exporter else None, 
+      config=run_config,
       warm_start_from=warm_start_settings, params={
           'resnet_size': int(flags_obj.resnet_size),
           'data_format': flags_obj.data_format,
-          'batch_size': flags_obj.batch_size,
+          'batch_size': flags_obj.batch_size * num_workers,
           'resnet_version': int(flags_obj.resnet_version),
           'loss_scale': flags_core.get_loss_scale(flags_obj),
           'dtype': flags_core.get_tf_dtype(flags_obj),
@@ -434,7 +444,7 @@ def resnet_main(
       })
 
   run_params = {
-      'batch_size': flags_obj.batch_size,
+      'batch_size': flags_obj.batch_size * num_workers,
       'dtype': flags_core.get_tf_dtype(flags_obj),
       'resnet_size': flags_obj.resnet_size,
       'resnet_version': flags_obj.resnet_version,
@@ -451,7 +461,7 @@ def resnet_main(
   train_hooks = hooks_helper.get_train_hooks(
       flags_obj.hooks,
       model_dir=flags_obj.model_dir,
-      batch_size=flags_obj.batch_size)
+      batch_size=flags_obj.batch_size * num_workers)
 
   if flags_obj.horovod:
     train_hooks.append(hvd.BroadcastGlobalVariablesHook(0))
@@ -459,18 +469,19 @@ def resnet_main(
   def input_fn_train(num_epochs):
     return input_function(
         is_training=True, data_dir=flags_obj.data_dir,
-        batch_size=distribution_utils.per_device_batch_size(
+        batch_size=num_workers * distribution_utils.per_device_batch_size(
             flags_obj.batch_size, flags_core.get_num_gpus(flags_obj)),
         num_epochs=num_epochs,
         num_gpus=flags_core.get_num_gpus(flags_obj),
-        batchaug_m=flags_obj.batchaug)
+        batchaug_m=flags_obj.batchaug,
+        num_workers=num_workers)
 
   def input_fn_eval():
     return input_function(
         is_training=False, data_dir=flags_obj.data_dir,
         batch_size=distribution_utils.per_device_batch_size(
             flags_obj.batch_size, flags_core.get_num_gpus(flags_obj)),
-        num_epochs=1, batchaug_m=1)
+        num_epochs=1, batchaug_m=1, num_workers=1)
 
   if flags_obj.eval_only or not flags_obj.train_epochs:
     # If --eval_only is set, perform a single loop with zero train epochs.
@@ -515,7 +526,7 @@ def resnet_main(
   if flags_obj.export_dir is not None and exporter:
     # Exports a saved model for the given classifier.
     input_receiver_fn = export.build_tensor_serving_input_receiver_fn(
-        shape, batch_size=flags_obj.batch_size)
+        shape, batch_size=flags_obj.batch_size * num_workers)
     classifier.export_savedmodel(flags_obj.export_dir, input_receiver_fn)
 
 
