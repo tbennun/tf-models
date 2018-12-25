@@ -37,6 +37,7 @@ from official.utils.logs import hooks_helper
 from official.utils.logs import logger
 from official.utils.misc import distribution_utils
 from official.utils.misc import model_helpers
+from official.utils.lars_optimizer import LARSOptimizer
 # pylint: enable=g-bad-import-order
 
 
@@ -283,13 +284,18 @@ def resnet_model_fn(features, labels, mode, model_class,
     return 'batch_normalization' not in name
   loss_filter_fn = loss_filter_fn or exclude_batch_norm
 
-  # Add weight decay to the loss.
-  l2_loss = weight_decay * tf.add_n(
+  if not flags.FLAGS.lars:
+    # Add weight decay to the loss.
+    l2_loss = weight_decay * tf.add_n(
       # loss is computed using fp32 for numerical stability.
       [tf.nn.l2_loss(tf.cast(v, tf.float32)) for v in tf.trainable_variables()
        if loss_filter_fn(v.name)])
-  tf.summary.scalar('l2_loss', l2_loss)
-  loss = cross_entropy + l2_loss
+
+    tf.summary.scalar('l2_loss', l2_loss)
+    loss = cross_entropy + l2_loss
+  else:
+    tf.summary.scalar('l2_loss', 0)
+    loss = cross_entropy
 
   if mode == tf.estimator.ModeKeys.TRAIN:
     global_step = tf.train.get_or_create_global_step()
@@ -300,10 +306,15 @@ def resnet_model_fn(features, labels, mode, model_class,
     tf.identity(learning_rate, name='learning_rate')
     tf.summary.scalar('learning_rate', learning_rate)
 
-    optimizer = tf.train.MomentumOptimizer(
+    if flags.FLAGS.lars:
+      tf.logging.info('Using LARS')
+      optimizer = LARSOptimizer(learning_rate, momentum=momentum,
+                                weight_decay=weight_decay)
+    else:
+      optimizer = tf.train.MomentumOptimizer(
         learning_rate=learning_rate,
         momentum=momentum
-    )
+      )
 
     if flags.FLAGS.horovod:
       tf.logging.info('Enabling Horovod distributed optimizer')
@@ -542,6 +553,8 @@ def define_resnet_flags(resnet_size_choices=None):
                        help='Number of duplicates per image for batch augmentation')
   flags.DEFINE_bool(name='horovod', short_name='hvd', default=False,
                     help='Use Horovod for distributed training')
+  flags.DEFINE_bool(name='lars', short_name='lars', default=False,
+                    help='Use LARS in training')
 
   flags.DEFINE_enum(
       name='resnet_version', short_name='rv', default='2',
