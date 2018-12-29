@@ -336,6 +336,7 @@ def imagenet_model_fn(features, labels, mode, params):
       resnet_size=params['resnet_size'],
       weight_decay=1e-4,
       learning_rate_fn=learning_rate_fn,
+      batch_size=params['batch_size'],
       momentum=0.9,
       data_format=params['data_format'],
       resnet_version=params['resnet_version'],

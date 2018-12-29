@@ -30,14 +30,13 @@ import os
 from absl import flags
 import tensorflow as tf
 
-from official.resnet import resnet_model
+from official.resnet import resnet_model, lars_util
 from official.utils.flags import core as flags_core
 from official.utils.export import export
 from official.utils.logs import hooks_helper
 from official.utils.logs import logger
 from official.utils.misc import distribution_utils
 from official.utils.misc import model_helpers
-from official.utils.lars_optimizer import LARSOptimizer
 # pylint: enable=g-bad-import-order
 
 
@@ -196,7 +195,7 @@ def learning_rate_with_decay(
 
 
 def resnet_model_fn(features, labels, mode, model_class,
-                    resnet_size, weight_decay, learning_rate_fn, momentum,
+                    resnet_size, weight_decay, learning_rate_fn, batch_size, momentum,
                     data_format, resnet_version, loss_scale,
                     loss_filter_fn=None, dtype=resnet_model.DEFAULT_DTYPE,
                     fine_tune=False):
@@ -306,10 +305,16 @@ def resnet_model_fn(features, labels, mode, model_class,
     tf.identity(learning_rate, name='learning_rate')
     tf.summary.scalar('learning_rate', learning_rate)
 
+
     if flags.FLAGS.lars:
       tf.logging.info('Using LARS')
-      optimizer = LARSOptimizer(learning_rate, momentum=momentum,
-                                weight_decay=weight_decay)
+      # From imagenet_main.py
+      _NUM_TRAIN_IMAGES = 1281167
+      steps_per_epoch = _NUM_TRAIN_IMAGES / batch_size
+      current_epoch = (tf.cast(global_step, tf.float32) /
+                       steps_per_epoch)
+      optimizer = lars_util.init_lars_optimizer(current_epoch, batch_size, momentum,
+                                                weight_decay)
     else:
       optimizer = tf.train.MomentumOptimizer(
         learning_rate=learning_rate,
@@ -555,6 +560,8 @@ def define_resnet_flags(resnet_size_choices=None):
                     help='Use Horovod for distributed training')
   flags.DEFINE_bool(name='lars', short_name='lars', default=False,
                     help='Use LARS in training')
+  flags.DEFINE_float(name='poly_rate', short_name='lpr', default=0.0,
+                     help=('Set LARS/Poly learning rate.'))
 
   flags.DEFINE_enum(
       name='resnet_version', short_name='rv', default='2',
