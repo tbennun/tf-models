@@ -477,7 +477,8 @@ def resnet_main(
   train_hooks = hooks_helper.get_train_hooks(
       flags_obj.hooks,
       model_dir=flags_obj.model_dir,
-      batch_size=flags_obj.batch_size * num_workers)
+      batch_size=flags_obj.batch_size * num_workers,
+      every_n_iter=flags_obj.train_acc_steps)
 
   if flags_obj.horovod:
     train_hooks.append(hvd.BroadcastGlobalVariablesHook(0))
@@ -562,6 +563,8 @@ def define_resnet_flags(resnet_size_choices=None):
                     help='Use LARS in training')
   flags.DEFINE_float(name='poly_rate', short_name='lpr', default=0.0,
                      help=('Set LARS/Poly learning rate.'))
+  flags.DEFINE_integer(name='train_acc_steps', short_name='tas', default=100,
+                       help='Number of steps between train accuracy printouts')
 
   flags.DEFINE_enum(
       name='resnet_version', short_name='rv', default='2',
