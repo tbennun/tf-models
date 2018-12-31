@@ -42,7 +42,7 @@ CASTABLE_TYPES = (tf.float16,)
 ALLOWED_TYPES = (DEFAULT_DTYPE,) + CASTABLE_TYPES
 
 
-flags.define_integer(name='virtual_batch_size', short_name='vbs', default=None,
+flags.DEFINE_integer(name='virtual_batch_size', short_name='vbs', default=None,
                      help='Ghost batch size to use in batch normalization')
 
 ################################################################################
