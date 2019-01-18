@@ -321,7 +321,7 @@ def imagenet_model_fn(features, labels, mode, params):
     base_lr = .1
   else:
     warmup = True
-    base_lr = .128
+    base_lr = .1 #28
 
   learning_rate_fn = resnet_run_loop.learning_rate_with_decay(
       batch_size=params['batch_size'], batch_denom=256,

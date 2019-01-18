@@ -431,6 +431,9 @@ def resnet_main(
     #session_config.gpu_options.allow_growth = True
     session_config.gpu_options.visible_device_list = str(hvd.local_rank())
 
+  if flags_obj.xla:
+    session_config.graph_options.optimizer_options.global_jit_level = tf.OptimizerOptions.ON_1
+
   distribution_strategy = distribution_utils.get_distribution_strategy(
       flags_core.get_num_gpus(flags_obj), flags_obj.all_reduce_alg)
 
@@ -559,6 +562,8 @@ def define_resnet_flags(resnet_size_choices=None):
                        help='Number of duplicates per image for batch augmentation')
   flags.DEFINE_bool(name='horovod', short_name='hvd', default=False,
                     help='Use Horovod for distributed training')
+  flags.DEFINE_bool(name='xla', short_name='xla', default=False,
+                    help='Use XLA for acceleration')
   flags.DEFINE_bool(name='lars', short_name='lars', default=False,
                     help='Use LARS in training')
   flags.DEFINE_float(name='poly_rate', short_name='lpr', default=0.0,
