@@ -71,7 +71,14 @@ def process_record_dataset(dataset, is_training, batch_size, shuffle_buffer,
   if is_training:
     # Shuffle the records. Note that we shuffle before repeating to ensure
     # that the shuffling respects epoch boundaries.
-    dataset = dataset.shuffle(buffer_size=shuffle_buffer)
+    seed = None
+    if flags.FLAGS.shuffleaug > 1:
+      rank = 0
+      if flags.FLAGS.horovod:
+        from horovod import tensorflow as hvd
+        rank = hvd.rank()
+      seed = flags.FLAGS.baseseed + int(rank // flags.FLAGS.shuffleaug)
+    dataset = dataset.shuffle(buffer_size=shuffle_buffer, seed=seed)
 
   # If we are training over multiple epochs before evaluating, repeat the
   # dataset for the appropriate number of epochs.
@@ -170,6 +177,10 @@ def learning_rate_with_decay(
     trained so far (global_step)- and returns the learning rate to be used
     for training the next batch.
   """
+  if flags.FLAGS.disablewarmup:
+    warmup = False
+    tf.logging.info('Disabled warmup')
+
   initial_learning_rate = base_lr * batch_size / batch_denom
 
   batches_per_epoch = num_images / batch_size
@@ -180,14 +191,17 @@ def learning_rate_with_decay(
   boundaries = [int(batches_per_epoch * epoch) for epoch in boundary_epochs]
   vals = [initial_learning_rate * decay for decay in decay_rates]
 
-  def learning_rate_fn(global_step):
+  def learning_rate_fn(step):
     """Builds scaled learning rate function with 5 epoch warm up."""
+    global_step = step + flags.FLAGS.start_epoch
+
     lr = tf.train.piecewise_constant(global_step, boundaries, vals)
     if warmup:
       warmup_steps = int(batches_per_epoch * 5)
       warmup_lr = (
           initial_learning_rate * tf.cast(global_step, tf.float32) / tf.cast(
               warmup_steps, tf.float32))
+
       return tf.cond(global_step < warmup_steps, lambda: warmup_lr, lambda: lr)
     return lr
 
@@ -239,6 +253,14 @@ def resnet_model_fn(features, labels, mode, model_class,
   """
 
   tf.logging.info('Final tensor: %s' % str(features))
+
+  #if mode == tf.estimator.ModeKeys.TRAIN:
+  #  rank = 0
+  #  if flags.FLAGS.horovod:
+  #    from horovod import tensorflow as hvd    
+  #    rank = hvd.rank()
+  #  features = tf.Print(features, [labels], 'LABELS from rank %d: ' % rank, summarize=200)
+  #  features = tf.Print(features, [features], 'FEATURES from rank %d: ' % rank, summarize=200)
 
   # Generate a summary node for the images
   tf.summary.image('images', features, max_outputs=6)
@@ -412,7 +434,7 @@ def resnet_main(
     hvd.init()
     if hvd.rank() != 0:
       exporter = False
-    num_workers = hvd.size()
+    num_workers = int(hvd.size() // flags.FLAGS.shuffleaug)
     tf.logging.info('Horovod initialized, rank %d / %d' % (hvd.rank(), hvd.size()))
 
   # Using the Winograd non-fused algorithms provides a small performance boost.
@@ -560,6 +582,22 @@ def define_resnet_flags(resnet_size_choices=None):
 
   flags.DEFINE_integer(name='batchaug', short_name='aug', default=1,
                        help='Number of duplicates per image for batch augmentation')
+
+  flags.DEFINE_integer(name='shuffleaug', short_name='saug', default=1,
+                       help='Number of duplicates per image for batch augmentation')
+  flags.DEFINE_integer(name='baseseed', short_name='bse', default=0,
+                       help='Base seed')
+
+  flags.DEFINE_integer(name='regime', short_name='fr', default=0,
+                       help='Use a certain LR schedule (0-2, higher is faster)')
+  flags.DEFINE_float(name='lrmult', short_name='lrm', default=1.0,
+                     help=('Base learning rate multiplier.'))
+  flags.DEFINE_bool(name='disablewarmup', short_name='dwu', default=False,
+                    help='Disable warmup')
+  flags.DEFINE_integer(name='start_epoch', short_name='sep', default=0,
+                       help='Epoch to start from (LR schedule)')
+  
+
   flags.DEFINE_bool(name='horovod', short_name='hvd', default=False,
                     help='Use Horovod for distributed training')
   flags.DEFINE_bool(name='xla', short_name='xla', default=False,

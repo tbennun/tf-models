@@ -199,7 +199,14 @@ def input_fn(is_training, data_dir, batch_size, num_epochs=1, num_gpus=None, bat
 
   if is_training:
     # Shuffle the input files
-    dataset = dataset.shuffle(buffer_size=_NUM_TRAIN_FILES)
+    seed = None
+    if flags.FLAGS.shuffleaug > 1:
+      rank = 0
+      if flags.FLAGS.horovod:
+        from horovod import tensorflow as hvd
+        rank = hvd.rank()
+      seed = flags.FLAGS.baseseed + int(rank // flags.FLAGS.shuffleaug)
+    dataset = dataset.shuffle(buffer_size=_NUM_TRAIN_FILES, seed=seed)
 
   # Convert to individual records.
   # cycle_length = 10 means 10 files will be read and deserialized in parallel.
@@ -323,9 +330,21 @@ def imagenet_model_fn(features, labels, mode, params):
     warmup = True
     base_lr = .1 #28
 
+  boundary_epochs = [30, 60, 80, 90]
+  tf.logging.info('USING REGIME %d' % flags.FLAGS.regime)
+  if flags.FLAGS.regime == 1:
+    boundary_epochs = [30, 35, 39, 40]
+  if flags.FLAGS.regime == 2:
+    boundary_epochs = [15, 20, 22, 30]
+  if flags.FLAGS.shuffleaug > 1:
+    tf.logging.info('SHUFFLEAUG M= %d' % flags.FLAGS.shuffleaug)
+    #base_lr /= flags.FLAGS.shuffleaug
+  base_lr *= flags.FLAGS.lrmult
+
+
   learning_rate_fn = resnet_run_loop.learning_rate_with_decay(
       batch_size=params['batch_size'], batch_denom=256,
-      num_images=_NUM_IMAGES['train'], boundary_epochs=[30, 60, 80, 90],
+      num_images=_NUM_IMAGES['train'], boundary_epochs=boundary_epochs,
       decay_rates=[1, 0.1, 0.01, 0.001, 1e-4], warmup=warmup, base_lr=base_lr)
 
   return resnet_run_loop.resnet_model_fn(
