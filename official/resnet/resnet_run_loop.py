@@ -29,6 +29,7 @@ import os
 # pylint: disable=g-bad-import-order
 from absl import flags
 import tensorflow as tf
+import time
 
 from official.resnet import resnet_model, lars_util
 from official.utils.flags import core as flags_core
@@ -198,9 +199,10 @@ def learning_rate_with_decay(
     lr = tf.train.piecewise_constant(global_step, boundaries, vals)
     if warmup:
       warmup_steps = int(batches_per_epoch * 5)
+      # For warmup that begins at 0.1, add "base_lr + ..."
       warmup_lr = (
-          initial_learning_rate * tf.cast(global_step, tf.float32) / tf.cast(
-              warmup_steps, tf.float32))
+        ((initial_learning_rate * tf.cast(global_step, tf.float32) - base_lr) / tf.cast(
+              warmup_steps, tf.float32)))
 
       return tf.cond(global_step < warmup_steps, lambda: warmup_lr, lambda: lr)
     return lr
@@ -328,13 +330,17 @@ def resnet_model_fn(features, labels, mode, model_class,
     tf.summary.scalar('learning_rate', learning_rate)
 
 
+
+    # From imagenet_main.py
+    _NUM_TRAIN_IMAGES = 1281167
+    steps_per_epoch = _NUM_TRAIN_IMAGES // batch_size
+    current_epoch = (tf.cast(global_step, tf.float32) /
+                     steps_per_epoch)
+    trainmode = 1
+
+
     if flags.FLAGS.lars:
       tf.logging.info('Using LARS')
-      # From imagenet_main.py
-      _NUM_TRAIN_IMAGES = 1281167
-      steps_per_epoch = _NUM_TRAIN_IMAGES / batch_size
-      current_epoch = (tf.cast(global_step, tf.float32) /
-                       steps_per_epoch)
       optimizer = lars_util.init_lars_optimizer(current_epoch, batch_size, momentum,
                                                 weight_decay)
     else:
@@ -383,6 +389,12 @@ def resnet_model_fn(features, labels, mode, model_class,
     update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
     train_op = tf.group(minimize_op, update_ops)
   else:
+    # From imagenet_main.py
+    _NUM_VAL_IMAGES = 50000
+    steps_per_epoch = _NUM_VAL_IMAGES // batch_size
+    current_epoch = 0
+    trainmode = 0
+
     train_op = None
 
   accuracy = tf.metrics.accuracy(labels, predictions['classes'])
@@ -398,6 +410,14 @@ def resnet_model_fn(features, labels, mode, model_class,
   tf.identity(accuracy_top_5[1], name='train_accuracy_top_5')
   tf.summary.scalar('train_accuracy', accuracy[1])
   tf.summary.scalar('train_accuracy_top_5', accuracy_top_5[1])
+
+  tf.identity(current_epoch, name='current_epoch')
+  tf.summary.scalar('current_epoch', current_epoch)
+  tf.identity(steps_per_epoch, name='steps_per_epoch')
+  tf.summary.scalar('steps_per_epoch', steps_per_epoch)  
+  tf.identity(trainmode, name='trainmode')
+  tf.summary.scalar('trainmode', trainmode)  
+  
 
   return tf.estimator.EstimatorSpec(
       mode=mode,
@@ -434,8 +454,10 @@ def resnet_main(
     hvd.init()
     if hvd.rank() != 0:
       exporter = False
+      tf.logging.set_verbosity(tf.logging.ERROR)
+
     num_workers = int(hvd.size() // flags.FLAGS.shuffleaug)
-    tf.logging.info('Horovod initialized, rank %d / %d' % (hvd.rank(), hvd.size()))
+    tf.logging.error('Horovod initialized, rank %d / %d' % (hvd.rank(), hvd.size()))
 
   # Using the Winograd non-fused algorithms provides a small performance boost.
   os.environ['TF_ENABLE_WINOGRAD_NONFUSED'] = '1'
@@ -499,11 +521,48 @@ def resnet_main(
   benchmark_logger.log_run_info('resnet', dataset_name, run_params,
                                 test_id=flags_obj.benchmark_test_id)
 
+  def log_formatter(fields):
+    if not exporter:
+      return None
+
+     
+    epoch = int(fields['current_epoch'])
+    progress = fields['current_epoch'] - epoch
+
+#                 'Time {dt:.3f}\t'
+    return str('{mode} - Epoch: [{epoch}][{step}/{steps_per_epoch}]\t'
+                 'LR {lr:.4f}\t'
+                 'Loss {loss:.4f}\t'
+                 'Prec@1 {prec1:.3f}\t'
+                 'Prec@5 {prec5:.3f}\t'
+                 .format(mode='TRAINING' if fields['trainmode'] == 1 else 'EVALUATING',
+                         epoch=epoch,
+                         step=int(progress*fields['steps_per_epoch']),
+                         steps_per_epoch=fields['steps_per_epoch'],
+                         lr=fields['learning_rate'],
+                         loss=fields['cross_entropy'],
+                         prec1=fields['train_accuracy'],
+                         prec5=fields['train_accuracy_top_5']
+                   ))
+
+
   train_hooks = hooks_helper.get_train_hooks(
       flags_obj.hooks,
       model_dir=flags_obj.model_dir,
       batch_size=flags_obj.batch_size * num_workers,
-      every_n_iter=flags_obj.train_acc_steps)
+      every_n_iter=flags_obj.train_acc_steps,
+      tensors_to_log={x:x for x in [
+        'current_epoch',
+        'steps_per_epoch',
+        'trainmode',
+        'global_step',
+        'learning_rate',
+        'cross_entropy',
+        'train_accuracy',
+        'train_accuracy_top_5']},
+      formatter=log_formatter
+  )
+
 
   if flags_obj.horovod:
     train_hooks.append(hvd.BroadcastGlobalVariablesHook(0))
@@ -606,7 +665,7 @@ def define_resnet_flags(resnet_size_choices=None):
                     help='Use LARS in training')
   flags.DEFINE_float(name='poly_rate', short_name='lpr', default=0.0,
                      help=('Set LARS/Poly learning rate.'))
-  flags.DEFINE_integer(name='train_acc_steps', short_name='tas', default=100,
+  flags.DEFINE_integer(name='train_acc_steps', short_name='tas', default=10,
                        help='Number of steps between train accuracy printouts')
 
   flags.DEFINE_enum(

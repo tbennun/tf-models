@@ -72,7 +72,7 @@ def get_train_hooks(name_list, use_tpu=False, **kwargs):
   return train_hooks
 
 
-def get_logging_tensor_hook(every_n_iter=100, tensors_to_log=None, **kwargs):  # pylint: disable=unused-argument
+def get_logging_tensor_hook(every_n_iter=100, tensors_to_log=None, formatter=None, **kwargs):  # pylint: disable=unused-argument
   """Function to get LoggingTensorHook.
 
   Args:
@@ -91,7 +91,8 @@ def get_logging_tensor_hook(every_n_iter=100, tensors_to_log=None, **kwargs):  #
 
   return tf.train.LoggingTensorHook(
       tensors=tensors_to_log,
-      every_n_iter=every_n_iter)
+      every_n_iter=every_n_iter,
+      formatter=formatter)
 
 
 def get_profiler_hook(model_dir, save_steps=1000, **kwargs):  # pylint: disable=unused-argument
