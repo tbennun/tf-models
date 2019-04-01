@@ -40,6 +40,10 @@ from official.utils.misc import distribution_utils
 from official.utils.misc import model_helpers
 # pylint: enable=g-bad-import-order
 
+try:
+  from official.utils.opt import SoloDanceOptimizer
+except: # In case of import errors (ImportError, ModuleNotFoundError)
+  SoloDanceOptimizer = None
 
 ################################################################################
 # Functions for input processing.
@@ -353,6 +357,11 @@ def resnet_model_fn(features, labels, mode, model_class,
       tf.logging.info('Enabling Horovod distributed optimizer')
       from horovod import tensorflow as hvd
       optimizer = hvd.DistributedOptimizer(optimizer)
+    elif flags.FLAGS.solodance:
+      from deep500.lv3.communication import CommunicationNetwork
+      tf.logging.info('Enabling Deep500 distributed optimizer')
+      comm = CommunicationNetwork()
+      optimizer = SoloDanceOptimizer(optimizer, comm.size)
 
     def _dense_grad_filter(gvs):
       """Only apply gradient updates to the final layer.
@@ -447,17 +456,39 @@ def resnet_main(
 
   model_helpers.apply_clean(flags.FLAGS)
 
+  if flags.FLAGS.horovod and flags.FLAGS.solodance:
+    raise ValueError('Horovod and Deep500/Solodance flags are incompatible!')
+
   exporter = True
   num_workers = 1
   if flags.FLAGS.horovod:
     from horovod import tensorflow as hvd
     hvd.init()
+    
     if hvd.rank() != 0:
       exporter = False
       tf.logging.set_verbosity(tf.logging.ERROR)
 
     num_workers = int(hvd.size() // flags.FLAGS.shuffleaug)
     tf.logging.error('Horovod initialized, rank %d / %d' % (hvd.rank(), hvd.size()))
+  elif flags.FLAGS.solodance:
+    if SoloDanceOptimizer is None:
+      raise ImportError('SoloDance could not be imported. Deep500 is required')
+
+    from deep500.lv3.communication import CommunicationNetwork
+    comm = CommunicationNetwork()
+
+    if comm.rank != 0:
+      exporter = False
+      tf.logging.set_verbosity(tf.logging.ERROR)
+    num_workers = int(comm.size // flags.FLAGS.shuffleaug)
+    tf.logging.error('D500 communication initialized, rank %d / %d' % (comm.rank, comm.size))
+    
+    # Set joint random seed instead of broadcasting variables
+    # TODO: Enable broadcasting
+    if flags.FLAGS.baseseed > 0:
+      tf.set_random_seed(flags.FLAGS.baseseed)
+
 
   # Using the Winograd non-fused algorithms provides a small performance boost.
   os.environ['TF_ENABLE_WINOGRAD_NONFUSED'] = '1'
@@ -541,8 +572,8 @@ def resnet_main(
                          steps_per_epoch=fields['steps_per_epoch'],
                          lr=fields['learning_rate'],
                          loss=fields['cross_entropy'],
-                         prec1=fields['train_accuracy'],
-                         prec5=fields['train_accuracy_top_5']
+                         prec1=(fields['train_accuracy'] * 100.0),
+                         prec5=(fields['train_accuracy_top_5'] * 100.0)
                    ))
 
 
@@ -644,8 +675,8 @@ def define_resnet_flags(resnet_size_choices=None):
 
   flags.DEFINE_integer(name='shuffleaug', short_name='saug', default=1,
                        help='Number of duplicates per image for batch augmentation')
-  flags.DEFINE_integer(name='baseseed', short_name='bse', default=0,
-                       help='Base seed')
+  flags.DEFINE_integer(name='baseseed', short_name='bse', default=1234,
+                       help='Base random seed')
 
   flags.DEFINE_integer(name='regime', short_name='fr', default=0,
                        help='Use a certain LR schedule (0-2, higher is faster)')
@@ -659,6 +690,8 @@ def define_resnet_flags(resnet_size_choices=None):
 
   flags.DEFINE_bool(name='horovod', short_name='hvd', default=False,
                     help='Use Horovod for distributed training')
+  flags.DEFINE_bool(name='solodance', short_name='solo', default=False,
+                    help='Use Deep500/SoloDance for distributed training')
   flags.DEFINE_bool(name='xla', short_name='xla', default=False,
                     help='Use XLA for acceleration')
   flags.DEFINE_bool(name='lars', short_name='lars', default=False,
