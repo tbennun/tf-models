@@ -204,8 +204,9 @@ def learning_rate_with_decay(
     if warmup:
       warmup_steps = int(batches_per_epoch * 5)
       # For warmup that begins at 0.1, add "base_lr + ..."
+      #  - base_lr
       warmup_lr = (
-        ((initial_learning_rate * tf.cast(global_step, tf.float32) - base_lr) / tf.cast(
+        ((initial_learning_rate * tf.cast(global_step, tf.float32)) / tf.cast(
               warmup_steps, tf.float32)))
 
       return tf.cond(global_step < warmup_steps, lambda: warmup_lr, lambda: lr)
