@@ -1,7 +1,29 @@
 import deep500 as d5
 from deep500.frameworks import tensorflow as d5tf
 import os
+import os.path
 import tensorflow as tf
+
+import deep500.frameworks.tensorflow.custom_operators.tf as d5cop
+import ctypes
+def _custom_so_op(op, so_file, stateful, name):
+    """ Registers a Deep500 Tensorflow operator from an existing .so file """
+
+    # Load the compiled library into Tensorflow
+    op_module = tf.load_op_library(so_file)
+    op_func = getattr(op_module, 'tf_op' + op.name)
+    op_grad_func = getattr(op_module, 'tf_op_grad' + op.name)
+    
+    # Create the deep500 custom op object
+    lib = ctypes.CDLL(so_file)
+    if not getattr(lib, 'create_new_op', False):
+        raise ValueError('Invalid custom operator library file')
+    lib.create_new_op.restype = ctypes.c_int64
+    lib.is_cuda_supported.restype = ctypes.c_bool
+    lib.report.restype = ctypes.c_int64
+
+    return d5cop.TFCompiledOp(op, op_func, op_grad_func, lib)
+
 
 class SoloDanceOptimizer(object):
     """ Enforces a sequential order on gradient exchange (by creating false 
@@ -17,8 +39,15 @@ class SoloDanceOptimizer(object):
                                                 [d5.tensordesc.runtime_shape(tf.float32), d5.tensordesc.runtime_shape(tf.float32)],
                                                 # Output tensor shapes (reduced gradient)
                                                 [d5.tensordesc.runtime_shape(tf.float32)],
-                                                live_output=True, output_folder='/tmp')
-        self.compiled_op = d5tf.custom_op(opdesc, compile_only=True)
+                                                live_output=True)#, output_folder='/tmp')
+
+        # If .so file exists, use cached file
+        fname = os.environ['SOLO_SO'] if 'SOLO_SO' in os.environ else None
+        if fname is not None and os.path.isfile(fname):
+            self.compiled_op = _custom_so_op(opdesc, fname, True, None)
+        else:
+            self.compiled_op = d5tf.custom_op(opdesc, compile_only=True)
+
         self._handles = []
 
     def compute_gradients(self, *args, **kwargs):
