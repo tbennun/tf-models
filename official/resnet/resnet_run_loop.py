@@ -182,11 +182,9 @@ def learning_rate_with_decay(
     trained so far (global_step)- and returns the learning rate to be used
     for training the next batch.
   """
-  if flags.FLAGS.disablewarmup:
-    warmup = False
-    tf.logging.info('Disabled warmup')
 
   initial_learning_rate = base_lr * batch_size / batch_denom
+  initial_learning_rate = max(base_lr, initial_learning_rate)
 
   batches_per_epoch = num_images / batch_size
 
@@ -195,6 +193,16 @@ def learning_rate_with_decay(
   # ImageNet: divide by 10 at epoch 30, 60, 80, and 90
   boundaries = [int(batches_per_epoch * epoch) for epoch in boundary_epochs]
   vals = [initial_learning_rate * decay for decay in decay_rates]
+
+  if flags.FLAGS.disablewarmup:
+    warmup = False
+    tf.logging.info('Disabled warmup')
+
+    # Epoch-wise warmup
+    #boundaries = [1,2,3,4,5] + boundaries
+    #epochwise = lambda e: base_lr + e*(initial_learning_rate - base_lr) / 5.0
+    #vals = [epochwise(i) for i in range(6)] + vals[1:]
+
 
   def learning_rate_fn(step):
     """Builds scaled learning rate function with 5 epoch warm up."""
@@ -205,7 +213,7 @@ def learning_rate_with_decay(
       warmup_steps = int(batches_per_epoch * 5)
       # For warmup that begins at 0.1, add "base_lr + ..."
       #  - base_lr
-      warmup_lr = (
+      warmup_lr = (base_lr + 
         ((initial_learning_rate * tf.cast(global_step, tf.float32)) / tf.cast(
               warmup_steps, tf.float32)))
 
